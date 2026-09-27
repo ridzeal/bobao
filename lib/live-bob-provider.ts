@@ -72,13 +72,15 @@ function classifyLine(text: string): LogLine["level"] {
   return "info";
 }
 
-function pushLine(handle: ProcessHandle, text: string): void {
-  const level = classifyLine(text);
-  const line: LogLine = { ts: new Date(), text, level };
+function pushLine(handle: ProcessHandle, text: string, isAssistantMessage = false): void {
+  // Never treat structured assistant messages as blocking prompts — they are
+  // conversational content, not interactive stdin prompts.
+  const level = isAssistantMessage ? classifyLine(text.replace(/\?/g, "")) : classifyLine(text);
+  const line: LogLine = { ts: new Date(), text, level: isAssistantMessage && level === "prompt" ? "info" : level };
   handle.lines.push(line);
 
   // Flip to blocked when a prompt-level line appears and session is running
-  if (level === "prompt" && handle.session.status === "running") {
+  if (line.level === "prompt" && handle.session.status === "running") {
     handle.session.status = "blocked";
     updateSessionStatus(handle.session.id, "blocked");
   }
@@ -156,8 +158,9 @@ export function spawnBobProcess(
       try {
         const msg = JSON.parse(text);
         if (msg.type === "message" && msg.content) {
-          const prefix = msg.role === "assistant" ? "[bob] " : "";
-          pushLine(handle, `${prefix}${msg.content}`);
+          const isAssistant = msg.role === "assistant";
+          const prefix = isAssistant ? "[bob] " : "";
+          pushLine(handle, `${prefix}${msg.content}`, isAssistant);
         } else if (msg.type === "result") {
           const status = msg.status === "success" ? "completed" : msg.status;
           pushLine(handle, `[task ${status}${msg.stats?.duration_ms ? ` in ${(msg.stats.duration_ms / 1000).toFixed(1)}s` : ""}]`);
