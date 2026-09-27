@@ -86,7 +86,7 @@ export async function POST(
   // Spawn the real bob process — topic is the first positional arg
   spawnBobProcess(session.id, [topic.trim(), ...args as string[]], cwd, {
     projectId,
-    harness: "Bob CLI",
+    harness: "Bob Shell",
     title: title.trim(),
     topic: topic.trim(),
     previewUrl: typeof previewUrl === "string" ? previewUrl.trim() : undefined,

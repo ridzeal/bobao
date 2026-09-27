@@ -36,7 +36,7 @@ function getDb(): Database.Database {
       CREATE TABLE IF NOT EXISTS sessions (
         id          TEXT PRIMARY KEY,
         project_id  TEXT NOT NULL,
-        harness     TEXT NOT NULL DEFAULT 'Bob CLI',
+        harness     TEXT NOT NULL DEFAULT 'Bob Shell',
         status      TEXT NOT NULL DEFAULT 'running',
         started_at  TEXT NOT NULL,
         title       TEXT NOT NULL,
@@ -253,7 +253,7 @@ export function createSession(
 
   db.prepare(
     `INSERT INTO sessions (id, project_id, harness, status, started_at, title, topic, preview_url)
-     VALUES (?, ?, 'Bob CLI', 'running', ?, ?, ?, ?)`
+     VALUES (?, ?, 'Bob Shell', 'running', ?, ?, ?, ?)`
   ).run(id, projectId, now, title, topic, previewUrl ?? null);
 
   refreshProjectStatus(projectId);
@@ -261,7 +261,7 @@ export function createSession(
   return {
     id,
     projectId,
-    harness: "Bob CLI",
+    harness: "Bob Shell",
     status: "running",
     startedAt: new Date(now),
     title,

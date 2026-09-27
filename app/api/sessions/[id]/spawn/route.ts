@@ -56,7 +56,7 @@ export async function POST(
     cwd,
     {
       projectId: typeof projectId === "string" ? projectId : "live",
-      harness: "Bob CLI",
+      harness: "Bob Shell",
       title: typeof title === "string" ? title : sessionId,
       topic: typeof topic === "string" ? topic : "",
       previewUrl: typeof previewUrl === "string" ? previewUrl : undefined,

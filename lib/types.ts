@@ -20,7 +20,7 @@ export interface Project {
 export interface Session {
   id: string;
   projectId: string;
-  harness: "Bob CLI";
+  harness: "Bob Shell";
   status: SessionStatus;
   startedAt: Date;
   title: string;
