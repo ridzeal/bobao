@@ -17,7 +17,7 @@ export default async function ProjectsPage() {
         <div>
           <h1 className="text-lg font-semibold text-txt">Projects</h1>
           <p className="text-sm text-txt-muted mt-0.5">
-            {projects.length} project{projects.length !== 1 ? "s" : ""} — IBM Bob CLI harness
+            {projects.length} project{projects.length !== 1 ? "s" : ""} — IBM Bob Shell harness
           </p>
         </div>
         <div className="flex items-center gap-4">

@@ -1,36 +1,105 @@
 /**
- * LiveProjectStore
- * ─────────────────
- * Pure in-memory store for projects and sessions.
- * No mock data — everything is created at runtime via the UI or API.
- *
- * Uses globalThis to survive Next.js hot-reload module re-evaluation in dev.
+ * LiveProjectStore — SQLite-backed
+ * ─────────────────────────────────
+ * Persistent store for projects and sessions.
+ * Data survives server restarts via a local SQLite file.
  */
 
+import Database from "better-sqlite3";
+import path from "path";
+import fs from "fs";
 import { Project, ProjectStatus, Session, SessionStatus } from "./types";
 
-// ─── Singleton state anchored to globalThis ───────────────────────────────────
+// ─── Singleton DB anchored to globalThis (survives HMR) ──────────────────────
 
 declare global {
   // eslint-disable-next-line no-var
-  var __agentOpsStore: {
-    projects: Map<string, Project>;
-    sessions: Map<string, Session>;
-    projectCounter: number;
-    sessionCounter: number;
-  } | undefined;
+  var __agentOpsDb: Database.Database | undefined;
 }
 
-if (!globalThis.__agentOpsStore) {
-  globalThis.__agentOpsStore = {
-    projects: new Map(),
-    sessions: new Map(),
-    projectCounter: 0,
-    sessionCounter: 0,
+function getDb(): Database.Database {
+  if (!globalThis.__agentOpsDb) {
+    const dbPath = path.join(process.cwd(), "bob-store.db");
+    const db = new Database(dbPath);
+    db.pragma("journal_mode = WAL");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS projects (
+        id          TEXT PRIMARY KEY,
+        name        TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        status      TEXT NOT NULL DEFAULT 'idle',
+        session_count INTEGER NOT NULL DEFAULT 0,
+        last_updated TEXT NOT NULL,
+        preview_url TEXT,
+        working_dir TEXT
+      );
+      CREATE TABLE IF NOT EXISTS sessions (
+        id          TEXT PRIMARY KEY,
+        project_id  TEXT NOT NULL,
+        harness     TEXT NOT NULL DEFAULT 'Bob CLI',
+        status      TEXT NOT NULL DEFAULT 'running',
+        started_at  TEXT NOT NULL,
+        title       TEXT NOT NULL,
+        topic       TEXT NOT NULL DEFAULT '',
+        preview_url TEXT,
+        FOREIGN KEY (project_id) REFERENCES projects(id)
+      );
+    `);
+    // Migrate: add topic column if missing
+    const cols = db.prepare("PRAGMA table_info(sessions)").all() as any[];
+    if (!cols.some((c) => c.name === "topic")) {
+      db.exec("ALTER TABLE sessions ADD COLUMN topic TEXT NOT NULL DEFAULT ''");
+    }
+    // Mark stale sessions as done on startup (process handles are in-memory, lost on restart)
+    db.exec(`UPDATE sessions SET status = 'done' WHERE status IN ('running', 'blocked')`);
+    // Recompute all project statuses
+    db.exec(`UPDATE projects SET status = 'idle'`);
+    for (const row of db.prepare("SELECT id FROM projects").all() as any[]) {
+      const sessRow = db.prepare(
+        `SELECT
+           SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS blocked,
+           SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+           COUNT(*) AS total
+         FROM sessions WHERE project_id = ?`
+      ).get(row.id) as any;
+      let status: ProjectStatus = "idle";
+      if (sessRow?.blocked > 0) status = "blocked";
+      else if (sessRow?.running > 0) status = "active";
+      db.prepare("UPDATE projects SET status = ?, session_count = ? WHERE id = ?")
+        .run(status, sessRow?.total ?? 0, row.id);
+    }
+    globalThis.__agentOpsDb = db;
+  }
+  return globalThis.__agentOpsDb;
+}
+
+// ─── Row mappers ─────────────────────────────────────────────────────────────
+
+function rowToProject(row: any): Project {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    status: row.status as ProjectStatus,
+    sessionCount: row.session_count,
+    lastUpdated: new Date(row.last_updated),
+    previewUrl: row.preview_url ?? undefined,
+    workingDir: row.working_dir ?? undefined,
   };
 }
 
-const store = globalThis.__agentOpsStore;
+function rowToSession(row: any): Session {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    harness: row.harness,
+    status: row.status as SessionStatus,
+    startedAt: new Date(row.started_at),
+    title: row.title,
+    topic: row.topic ?? "",
+    previewUrl: row.preview_url ?? undefined,
+  };
+}
 
 // ─── Project CRUD ─────────────────────────────────────────────────────────────
 
@@ -38,45 +107,80 @@ export function createProject(
   name: string,
   description: string,
   previewUrl?: string,
+  workingDir?: string,
 ): Project {
-  store.projectCounter += 1;
-  const id = `proj-${store.projectCounter}`;
-  const project: Project = {
+  const db = getDb();
+  const counter = (db.prepare("SELECT MAX(CAST(SUBSTR(id, 6) AS INTEGER)) AS n FROM projects").get() as any)?.n ?? 0;
+  const num = counter + 1;
+  const id = `proj-${num}`;
+  const now = new Date().toISOString();
+
+  db.prepare(
+    `INSERT INTO projects (id, name, description, status, session_count, last_updated, preview_url, working_dir)
+     VALUES (?, ?, ?, 'idle', 0, ?, ?, ?)`
+  ).run(id, name, description, now, previewUrl ?? null, workingDir ?? null);
+
+  // Ensure working directory exists
+  if (workingDir) {
+    try { fs.mkdirSync(workingDir, { recursive: true }); } catch { /* ignore */ }
+  }
+
+  return {
     id,
     name,
     description,
     status: "idle",
     sessionCount: 0,
-    lastUpdated: new Date(),
+    lastUpdated: new Date(now),
     previewUrl,
+    workingDir,
   };
-  store.projects.set(id, project);
-  return project;
 }
 
 export function getProject(id: string): Project | undefined {
-  return store.projects.get(id);
+  const row = getDb().prepare("SELECT * FROM projects WHERE id = ?").get(id);
+  return row ? rowToProject(row) : undefined;
+}
+
+export function deleteProject(id: string): boolean {
+  const db = getDb();
+  db.prepare("DELETE FROM sessions WHERE project_id = ?").run(id);
+  const result = db.prepare("DELETE FROM projects WHERE id = ?").run(id);
+  return result.changes > 0;
 }
 
 export function listProjects(): Project[] {
-  return Array.from(store.projects.values()).sort(
-    (a, b) => b.lastUpdated.getTime() - a.lastUpdated.getTime(),
-  );
+  const rows = getDb().prepare("SELECT * FROM projects ORDER BY last_updated DESC").all();
+  return rows.map(rowToProject);
 }
 
-/** Recompute project status from its sessions and update lastUpdated. */
+export function getNextProjectNumber(): number {
+  const row = getDb().prepare("SELECT MAX(CAST(SUBSTR(id, 6) AS INTEGER)) AS n FROM projects").get() as any;
+  return (row?.n ?? 0) + 1;
+}
+
+export function getNextSessionNumber(projectId: string): number {
+  const row = getDb().prepare("SELECT COUNT(*) AS n FROM sessions WHERE project_id = ?").get(projectId) as any;
+  return (row?.n ?? 0) + 1;
+}
+
 export function refreshProjectStatus(projectId: string): void {
-  const project = store.projects.get(projectId);
-  if (!project) return;
+  const db = getDb();
+  const row = db.prepare(
+    `SELECT
+       SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS blocked,
+       SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+       COUNT(*) AS total
+     FROM sessions WHERE project_id = ?`
+  ).get(projectId) as any;
 
-  const projectSessions = listSessions(projectId);
   let status: ProjectStatus = "idle";
-  if (projectSessions.some((s) => s.status === "blocked")) status = "blocked";
-  else if (projectSessions.some((s) => s.status === "running")) status = "active";
+  if (row?.blocked > 0) status = "blocked";
+  else if (row?.running > 0) status = "active";
 
-  project.status = status;
-  project.sessionCount = projectSessions.length;
-  project.lastUpdated = new Date();
+  db.prepare(
+    "UPDATE projects SET status = ?, session_count = ?, last_updated = ? WHERE id = ?"
+  ).run(status, row?.total ?? 0, new Date().toISOString(), projectId);
 }
 
 // ─── Session CRUD ─────────────────────────────────────────────────────────────
@@ -84,37 +188,55 @@ export function refreshProjectStatus(projectId: string): void {
 export function createSession(
   projectId: string,
   title: string,
+  topic: string,
   previewUrl?: string,
 ): Session {
-  store.sessionCounter += 1;
-  const id = `sess-${projectId}-${store.sessionCounter}`;
-  const session: Session = {
+  const db = getDb();
+  // Find max numeric suffix among existing sessions for this project
+  const prefix = `sess-${projectId}-`;
+  const row = db.prepare(
+    `SELECT MAX(CAST(SUBSTR(id, ?) AS INTEGER)) AS n FROM sessions WHERE id LIKE ?`
+  ).get(prefix.length + 1, `${prefix}%`) as any;
+  const num = (row?.n ?? 0) + 1;
+  const id = `${prefix}${num}`;
+  const now = new Date().toISOString();
+
+  db.prepare(
+    `INSERT INTO sessions (id, project_id, harness, status, started_at, title, topic, preview_url)
+     VALUES (?, ?, 'Bob CLI', 'running', ?, ?, ?, ?)`
+  ).run(id, projectId, now, title, topic, previewUrl ?? null);
+
+  refreshProjectStatus(projectId);
+
+  return {
     id,
     projectId,
     harness: "Bob CLI",
     status: "running",
-    startedAt: new Date(),
+    startedAt: new Date(now),
     title,
+    topic,
     previewUrl,
   };
-  store.sessions.set(id, session);
-  refreshProjectStatus(projectId);
-  return session;
 }
 
 export function getSession(id: string): Session | undefined {
-  return store.sessions.get(id);
+  const row = getDb().prepare("SELECT * FROM sessions WHERE id = ?").get(id);
+  return row ? rowToSession(row) : undefined;
 }
 
 export function listSessions(projectId: string): Session[] {
-  return Array.from(store.sessions.values())
-    .filter((s) => s.projectId === projectId)
-    .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime());
+  const rows = getDb().prepare(
+    "SELECT * FROM sessions WHERE project_id = ? ORDER BY started_at DESC"
+  ).all(projectId);
+  return rows.map(rowToSession);
 }
 
 export function updateSessionStatus(id: string, status: SessionStatus): void {
-  const session = store.sessions.get(id);
+  const db = getDb();
+  const session = getSession(id);
   if (!session) return;
-  session.status = status;
+
+  db.prepare("UPDATE sessions SET status = ? WHERE id = ?").run(status, id);
   refreshProjectStatus(session.projectId);
 }

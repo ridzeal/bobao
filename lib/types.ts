@@ -13,6 +13,7 @@ export interface Project {
   sessionCount: number;
   lastUpdated: Date;
   previewUrl?: string;
+  workingDir?: string;
 }
 
 export interface Session {
@@ -22,6 +23,7 @@ export interface Session {
   status: SessionStatus;
   startedAt: Date;
   title: string;
+  topic: string;
   previewUrl?: string;
 }
 

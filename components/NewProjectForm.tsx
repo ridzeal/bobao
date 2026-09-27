@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 export function NewProjectForm() {
@@ -8,14 +8,42 @@ export function NewProjectForm() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [previewUrl, setPreviewUrl] = useState("");
+  const [previewUrl, setPreviewUrl] = useState("http://localhost:4000");
+  const [workingDir, setWorkingDir] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+
+  // Fetch username and next project number on mount to build defaults
+  useEffect(() => {
+    if (!open) return;
+    Promise.all([
+      fetch("/api/user").then((r) => r.json()),
+      fetch("/api/projects/next-number").then((r) => r.json()),
+    ]).then(([user, proj]) => {
+      const n = proj.number ?? 1;
+      const uname = user.username ?? "user";
+      const suggestedName = `project-${n}`;
+      setName(suggestedName);
+      setWorkingDir(`/home/${uname}/${suggestedName}`);
+    });
+  }, [open]);
+
+  // Keep working dir in sync with name changes
+  useEffect(() => {
+    if (!open || !name.trim()) return;
+    fetch("/api/user")
+      .then((r) => r.json())
+      .then((user) => {
+        const uname = user.username ?? "user";
+        setWorkingDir(`/home/${uname}/${name.trim()}`);
+      });
+  }, [name, open]);
 
   function reset() {
     setName("");
     setDescription("");
-    setPreviewUrl("");
+    setPreviewUrl("http://localhost:4000");
+    setWorkingDir("");
     setError(null);
   }
 
@@ -39,6 +67,7 @@ export function NewProjectForm() {
             name: trimmedName,
             description: description.trim() || undefined,
             previewUrl: previewUrl.trim() || undefined,
+            workingDir: workingDir.trim() || undefined,
           }),
         });
 
@@ -112,13 +141,27 @@ export function NewProjectForm() {
 
           <div>
             <label className="block text-xs text-txt-dim mb-1.5">
+              Working Directory <span className="text-red">*</span>
+            </label>
+            <input
+              type="text"
+              value={workingDir}
+              onChange={(e) => setWorkingDir(e.target.value)}
+              placeholder="/home/user/my-project"
+              required
+              className="w-full bg-bg-elevated border border-bg-border rounded-lg px-3 py-2 text-sm font-mono text-txt placeholder:text-txt-dim focus:outline-none focus:ring-1 focus:ring-green/50 focus:border-green/50 transition-colors"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs text-txt-dim mb-1.5">
               Preview URL <span className="text-txt-dim">(optional)</span>
             </label>
             <input
               type="url"
               value={previewUrl}
               onChange={(e) => setPreviewUrl(e.target.value)}
-              placeholder="http://localhost:3001"
+              placeholder="http://localhost:4000"
               className="w-full bg-bg-elevated border border-bg-border rounded-lg px-3 py-2 text-sm font-mono text-txt placeholder:text-txt-dim focus:outline-none focus:ring-1 focus:ring-green/50 focus:border-green/50 transition-colors"
             />
           </div>

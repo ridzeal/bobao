@@ -1,20 +1,54 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
-export function NewSessionForm({ projectId }: { projectId: string }) {
+interface ProjectDefaults {
+  workingDir?: string;
+  previewUrl?: string;
+}
+
+export function NewSessionForm({
+  projectId,
+  projectDefaults,
+}: {
+  projectId: string;
+  projectDefaults?: ProjectDefaults;
+}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
+  const [topic, setTopic] = useState("");
   const [cwd, setCwd] = useState("");
   const [argsRaw, setArgsRaw] = useState("");
   const [previewUrl, setPreviewUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
+  // Auto-generate title when opening
+  useEffect(() => {
+    if (!open) return;
+    fetch(`/api/projects/${projectId}/sessions/next-number`)
+      .then((r) => r.json())
+      .then((data) => {
+        const n = data.number ?? 1;
+        setTitle(`session-${n}`);
+      })
+      .catch(() => {
+        setTitle("session-1");
+      });
+  }, [open, projectId]);
+
+  // Apply project defaults when opening
+  useEffect(() => {
+    if (!open) return;
+    setCwd(projectDefaults?.workingDir ?? "");
+    setPreviewUrl(projectDefaults?.previewUrl ?? "");
+  }, [open, projectDefaults]);
+
   function reset() {
     setTitle("");
+    setTopic("");
     setCwd("");
     setArgsRaw("");
     setPreviewUrl("");
@@ -29,8 +63,9 @@ export function NewSessionForm({ projectId }: { projectId: string }) {
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const trimmedTitle = title.trim();
+    const trimmedTopic = topic.trim();
     const trimmedCwd = cwd.trim();
-    if (!trimmedTitle || !trimmedCwd) return;
+    if (!trimmedTitle || !trimmedTopic || !trimmedCwd) return;
 
     // Parse args: split on whitespace respecting quoted strings
     const args = argsRaw.trim()
@@ -45,6 +80,7 @@ export function NewSessionForm({ projectId }: { projectId: string }) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             title: trimmedTitle,
+            topic: trimmedTopic,
             args,
             cwd: trimmedCwd,
             previewUrl: previewUrl.trim() || undefined,
@@ -101,6 +137,21 @@ export function NewSessionForm({ projectId }: { projectId: string }) {
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Describe the task for Bob…"
+              required
+              className="w-full bg-bg-elevated border border-bg-border rounded-lg px-3 py-2 text-sm font-mono text-txt placeholder:text-txt-dim focus:outline-none focus:ring-1 focus:ring-green/50 focus:border-green/50 transition-colors"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs text-txt-dim mb-1.5">
+              Topic <span className="text-red">*</span>{" "}
+              <span className="text-txt-dim">(first prompt sent to Bob)</span>
+            </label>
+            <input
+              type="text"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              placeholder="e.g. Fix the login bug on the auth page"
               required
               className="w-full bg-bg-elevated border border-bg-border rounded-lg px-3 py-2 text-sm font-mono text-txt placeholder:text-txt-dim focus:outline-none focus:ring-1 focus:ring-green/50 focus:border-green/50 transition-colors"
             />
@@ -166,7 +217,7 @@ export function NewSessionForm({ projectId }: { projectId: string }) {
           </button>
           <button
             type="submit"
-            disabled={isPending || !title.trim() || !cwd.trim()}
+            disabled={isPending || !title.trim() || !topic.trim() || !cwd.trim()}
             className="px-4 py-2 bg-green/10 border border-green/30 text-green text-xs font-medium rounded-lg hover:bg-green/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {isPending ? "Launching…" : "Launch Session"}

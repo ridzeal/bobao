@@ -11,7 +11,7 @@
  * POST /api/sessions/[id]/input   → sendInput()         — writes to stdin
  */
 
-import { spawn, ChildProcessWithoutNullStreams } from "child_process";
+import { spawn, execFile, ChildProcessWithoutNullStreams } from "child_process";
 import { createInterface } from "readline";
 import type { Session, SessionStatus, LogLine, Project } from "./types";
 import { updateSessionStatus } from "./live-store";
@@ -95,8 +95,10 @@ function pushLine(handle: ProcessHandle, text: string): void {
  * Spawn a `bob` child process for `sessionId`.
  * If a process already exists for this session it is killed first.
  *
+ * Uses `bob run --format stream-json` for structured output.
+ *
  * @param sessionId  - must match LIVE_SESSION_ID in the composite provider
- * @param args       - argv passed to `bob` (e.g. ["--task", "..."])
+ * @param args       - argv passed to `bob run` (e.g. ["--prompt", "...", "topic"])
  * @param cwd        - working directory for the child process
  * @param sessionMeta - Session metadata (title, projectId, …)
  */
@@ -113,11 +115,18 @@ export function spawnBobProcess(
     handles.delete(sessionId);
   }
 
-  const proc = spawn("bob", args, {
+  // Use wrapper script to resolve bob in sandboxed Next.js context
+  const wrapperPath = require("path").join(process.cwd(), "bob-run.js");
+  const proc = spawn(process.execPath, [wrapperPath, ...args], {
     cwd,
-    env: { ...process.env },
+    env: { ...process.env, BOB_CWD: cwd },
     stdio: ["pipe", "pipe", "pipe"],
   }) as ChildProcessWithoutNullStreams;
+
+  console.log(`[bob] spawned pid=${proc.pid} cmd=node ${wrapperPath} ${args.join(" ")} cwd=${cwd}`);
+
+  // Bob waits for stdin to close before starting — close it immediately for headless mode
+  proc.stdin.end();
 
   const session: Session = {
     id: sessionId,
@@ -135,21 +144,51 @@ export function spawnBobProcess(
 
   handles.set(sessionId, handle);
 
-  // Stream stdout line by line
-  const rlOut = createInterface({ input: proc.stdout, crlfDelay: Infinity });
-  rlOut.on("line", (text) => pushLine(handle, text));
+  // Buffer partial lines from stdout
+  let stdoutBuf = "";
+  proc.stdout.on("data", (chunk: Buffer) => {
+    stdoutBuf += chunk.toString();
+    const lines = stdoutBuf.split("\n");
+    stdoutBuf = lines.pop() ?? "";
+    for (const line of lines) {
+      const text = line.trim();
+      if (!text) continue;
+      try {
+        const msg = JSON.parse(text);
+        if (msg.type === "message" && msg.content) {
+          const prefix = msg.role === "assistant" ? "[bob] " : "";
+          pushLine(handle, `${prefix}${msg.content}`);
+        } else if (msg.type === "result") {
+          const status = msg.status === "success" ? "completed" : msg.status;
+          pushLine(handle, `[task ${status}${msg.stats?.duration_ms ? ` in ${(msg.stats.duration_ms / 1000).toFixed(1)}s` : ""}]`);
+        }
+      } catch {
+        pushLine(handle, text);
+      }
+    }
+  });
 
-  // Stream stderr line by line (surface as warn/error)
-  const rlErr = createInterface({ input: proc.stderr, crlfDelay: Infinity });
-  rlErr.on("line", (text) => pushLine(handle, text));
+  // Buffer partial lines from stderr
+  let stderrBuf = "";
+  proc.stderr.on("data", (chunk: Buffer) => {
+    stderrBuf += chunk.toString();
+    const lines = stderrBuf.split("\n");
+    stderrBuf = lines.pop() ?? "";
+    for (const line of lines) {
+      const text = line.trim();
+      if (text) pushLine(handle, text);
+    }
+  });
 
   proc.on("close", (code) => {
+    console.log(`[bob] process pid=${proc.pid} closed code=${code}`);
     handle.session.status = "done";
     updateSessionStatus(sessionId, "done");
     pushLine(handle, `[process exited with code ${code ?? "—"}]`);
   });
 
   proc.on("error", (err) => {
+    console.log(`[bob] process error pid=${proc.pid}: ${err.message}`);
     handle.session.status = "done";
     updateSessionStatus(sessionId, "done");
     pushLine(handle, `[spawn error: ${err.message}]`);

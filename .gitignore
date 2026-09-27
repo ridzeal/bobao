@@ -133,6 +133,9 @@ build/
 # MiMoCode internal
 .mimocode/
 
+# SQLite data
+bob-store.db*
+
 # ============================================
 # DO NOT REMOVE ABOVE PATTERNS
 # ============================================

@@ -4,7 +4,7 @@ import { Navbar } from "@/components/Navbar";
 
 export const metadata: Metadata = {
   title: "BOBAO — Bob Agent Orchestration",
-  description: "Monitor and orchestrate IBM Bob CLI agent sessions",
+  description: "Monitor and orchestrate IBM Bob Shell agent sessions",
 };
 
 export default function RootLayout({

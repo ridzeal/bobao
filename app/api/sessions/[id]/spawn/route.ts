@@ -31,6 +31,7 @@ export async function POST(
     cwd?: unknown;
     projectId?: unknown;
     title?: unknown;
+    topic?: unknown;
     previewUrl?: unknown;
   };
 
@@ -40,7 +41,7 @@ export async function POST(
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { args, cwd, projectId, title, previewUrl } = body;
+  const { args, cwd, projectId, title, topic, previewUrl } = body;
 
   if (!Array.isArray(args) || typeof cwd !== "string") {
     return NextResponse.json(
@@ -57,6 +58,7 @@ export async function POST(
       projectId: typeof projectId === "string" ? projectId : "live",
       harness: "Bob CLI",
       title: typeof title === "string" ? title : sessionId,
+      topic: typeof topic === "string" ? topic : "",
       previewUrl: typeof previewUrl === "string" ? previewUrl : undefined,
     },
   );

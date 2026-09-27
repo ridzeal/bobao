@@ -5,6 +5,7 @@ import { ProjectBadge, SessionBadge, HarnessBadge } from "@/components/StatusBad
 import { RelTime } from "@/components/RelTime";
 import { PageShell, Card } from "@/components/Layout";
 import { NewSessionForm } from "@/components/NewSessionForm";
+import { DeleteProjectButton } from "@/components/DeleteProjectButton";
 
 export const dynamic = "force-dynamic";
 
@@ -44,7 +45,10 @@ export default async function ProjectPage({
           </div>
           <p className="text-sm text-txt-muted">{project.description || <span className="italic text-txt-dim">No description</span>}</p>
         </div>
-        <RelTime date={project.lastUpdated} />
+        <div className="flex items-center gap-3 shrink-0">
+          <RelTime date={project.lastUpdated} />
+          <DeleteProjectButton projectId={project.id} />
+        </div>
       </div>
 
       {/* summary panel */}
@@ -90,7 +94,13 @@ export default async function ProjectPage({
           </h2>
           <div className="flex items-center gap-3">
             <span className="text-xs text-txt-dim font-mono">{sessions.length} total</span>
-            <NewSessionForm projectId={project.id} />
+            <NewSessionForm
+              projectId={project.id}
+              projectDefaults={{
+                workingDir: project.workingDir,
+                previewUrl: project.previewUrl,
+              }}
+            />
           </div>
         </div>
 

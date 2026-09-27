@@ -12,14 +12,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { createProject } from "@/lib/live-store";
 
 export async function POST(req: NextRequest) {
-  let body: { name?: unknown; description?: unknown; previewUrl?: unknown };
+  let body: { name?: unknown; description?: unknown; previewUrl?: unknown; workingDir?: unknown };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { name, description, previewUrl } = body;
+  const { name, description, previewUrl, workingDir } = body;
 
   if (typeof name !== "string" || !name.trim()) {
     return NextResponse.json(
@@ -32,6 +32,7 @@ export async function POST(req: NextRequest) {
     name.trim(),
     typeof description === "string" ? description.trim() : "",
     typeof previewUrl === "string" ? previewUrl.trim() : undefined,
+    typeof workingDir === "string" ? workingDir.trim() : undefined,
   );
 
   return NextResponse.json(project, { status: 201 });

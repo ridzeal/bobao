@@ -19,7 +19,7 @@ export function Navbar() {
         </Link>
       </nav>
       <div className="ml-auto flex items-center gap-2">
-        <span className="text-xs font-mono text-txt-dim">IBM Bob CLI</span>
+        <span className="text-xs font-mono text-txt-dim">IBM Bob Shell</span>
         <span className="size-2 rounded-full bg-green animate-pulse" />
       </div>
     </header>
