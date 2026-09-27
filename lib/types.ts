@@ -14,6 +14,7 @@ export interface Project {
   lastUpdated: Date;
   previewUrl?: string;
   workingDir?: string;
+  devCommand?: string;
 }
 
 export interface Session {

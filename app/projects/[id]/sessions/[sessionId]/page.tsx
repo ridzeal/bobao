@@ -6,6 +6,7 @@ import { RelTime } from "@/components/RelTime";
 import { PageShell } from "@/components/Layout";
 import { LiveLogPanel } from "@/components/LiveLogPanel";
 import { PreviewPanel, PreviewPlaceholder } from "@/components/PreviewPanel";
+import { DevServerControls } from "@/components/DevServerControls";
 import { sendInputAction } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -83,10 +84,14 @@ export default async function SessionPage({
         {/* preview panel — only rendered when URL present */}
         {session.previewUrl && (
           <div className="bg-bg-surface border border-bg-border rounded-lg overflow-hidden flex flex-col" style={{ height: "520px" }}>
-            <div className="px-3 py-2 border-b border-bg-border bg-bg-elevated shrink-0 flex items-center gap-2">
+            <div className="relative px-3 py-2 border-b border-bg-border bg-bg-elevated shrink-0 flex items-center justify-between gap-2">
               <span className="text-xs font-mono text-txt-dim uppercase tracking-wide">
                 Local app preview
               </span>
+              <DevServerControls
+                projectId={project.id}
+                devCommand={project.devCommand}
+              />
             </div>
             <PreviewPanel url={session.previewUrl} />
           </div>

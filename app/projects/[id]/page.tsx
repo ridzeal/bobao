@@ -6,6 +6,7 @@ import { RelTime } from "@/components/RelTime";
 import { PageShell, Card } from "@/components/Layout";
 import { NewSessionForm } from "@/components/NewSessionForm";
 import { DeleteProjectButton } from "@/components/DeleteProjectButton";
+import { EditProjectButton } from "@/components/EditProjectButton";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +48,7 @@ export default async function ProjectPage({
         </div>
         <div className="flex items-center gap-3 shrink-0">
           <RelTime date={project.lastUpdated} />
+          <EditProjectButton project={project} />
           <DeleteProjectButton projectId={project.id} />
         </div>
       </div>

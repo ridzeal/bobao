@@ -63,6 +63,11 @@ function getDb(): Database.Database {
     if (!cols2.some((c) => c.name === "task_id")) {
       db.exec("ALTER TABLE sessions ADD COLUMN task_id TEXT");
     }
+    // Migrate: add dev_command column to projects if missing
+    const projCols = db.prepare("PRAGMA table_info(projects)").all() as any[];
+    if (!projCols.some((c) => c.name === "dev_command")) {
+      db.exec("ALTER TABLE projects ADD COLUMN dev_command TEXT");
+    }
     // Mark stale sessions as done on startup (process handles are in-memory, lost on restart)
     db.exec(`UPDATE sessions SET status = 'done' WHERE status IN ('running', 'blocked')`);
     // Recompute all project statuses
@@ -98,6 +103,7 @@ function rowToProject(row: any): Project {
     lastUpdated: new Date(row.last_updated),
     previewUrl: row.preview_url ?? undefined,
     workingDir: row.working_dir ?? undefined,
+    devCommand: row.dev_command ?? undefined,
   };
 }
 
@@ -121,6 +127,7 @@ export function createProject(
   description: string,
   previewUrl?: string,
   workingDir?: string,
+  devCommand?: string,
 ): Project {
   const db = getDb();
   const counter = (db.prepare("SELECT MAX(CAST(SUBSTR(id, 6) AS INTEGER)) AS n FROM projects").get() as any)?.n ?? 0;
@@ -129,9 +136,9 @@ export function createProject(
   const now = new Date().toISOString();
 
   db.prepare(
-    `INSERT INTO projects (id, name, description, status, session_count, last_updated, preview_url, working_dir)
-     VALUES (?, ?, ?, 'idle', 0, ?, ?, ?)`
-  ).run(id, name, description, now, previewUrl ?? null, workingDir ?? null);
+    `INSERT INTO projects (id, name, description, status, session_count, last_updated, preview_url, working_dir, dev_command)
+     VALUES (?, ?, ?, 'idle', 0, ?, ?, ?, ?)`
+  ).run(id, name, description, now, previewUrl ?? null, workingDir ?? null, devCommand ?? null);
 
   // Ensure working directory exists
   if (workingDir) {
@@ -147,6 +154,7 @@ export function createProject(
     lastUpdated: new Date(now),
     previewUrl,
     workingDir,
+    devCommand,
   };
 }
 
@@ -163,6 +171,32 @@ export function deleteProject(id: string): boolean {
   db.prepare("DELETE FROM sessions WHERE project_id = ?").run(id);
   const result = db.prepare("DELETE FROM projects WHERE id = ?").run(id);
   return result.changes > 0;
+}
+
+export function updateProject(
+  id: string,
+  fields: { description?: string; previewUrl?: string; workingDir?: string; devCommand?: string },
+): Project | undefined {
+  const db = getDb();
+  const project = getProject(id);
+  if (!project) return undefined;
+
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+
+  if (fields.description !== undefined) { sets.push("description = ?"); vals.push(fields.description); }
+  if (fields.previewUrl !== undefined) { sets.push("preview_url = ?"); vals.push(fields.previewUrl || null); }
+  if (fields.workingDir !== undefined) { sets.push("working_dir = ?"); vals.push(fields.workingDir || null); }
+  if (fields.devCommand !== undefined) { sets.push("dev_command = ?"); vals.push(fields.devCommand || null); }
+
+  if (sets.length === 0) return project;
+
+  sets.push("last_updated = ?");
+  vals.push(new Date().toISOString());
+  vals.push(id);
+
+  db.prepare(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+  return getProject(id)!;
 }
 
 export function listProjects(): Project[] {

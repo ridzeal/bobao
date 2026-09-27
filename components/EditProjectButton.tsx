@@ -1,92 +1,52 @@
 "use client";
 
-import { useState, useTransition, useEffect } from "react";
+import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import type { Project } from "@/lib/types";
 
-export function NewProjectForm() {
+export function EditProjectButton({ project }: { project: Project }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [previewUrl, setPreviewUrl] = useState("http://localhost:4000");
-  const [workingDir, setWorkingDir] = useState("");
-  const [devCommand, setDevCommand] = useState("");
+  const [description, setDescription] = useState(project.description ?? "");
+  const [previewUrl, setPreviewUrl] = useState(project.previewUrl ?? "");
+  const [workingDir, setWorkingDir] = useState(project.workingDir ?? "");
+  const [devCommand, setDevCommand] = useState(project.devCommand ?? "");
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  // Fetch username and next project number on mount to build defaults
-  useEffect(() => {
-    if (!open) return;
-    Promise.all([
-      fetch("/api/user").then((r) => r.json()),
-      fetch("/api/projects/next-number").then((r) => r.json()),
-    ]).then(([user, proj]) => {
-      const n = proj.number ?? 1;
-      const uname = user.username ?? "user";
-      const suggestedName = `project-${n}`;
-      setName(suggestedName);
-      setWorkingDir(`/home/${uname}/${suggestedName}`);
-    });
-  }, [open]);
-
-  // Keep working dir in sync with name changes
-  useEffect(() => {
-    if (!open || !name.trim()) return;
-    fetch("/api/user")
-      .then((r) => r.json())
-      .then((user) => {
-        const uname = user.username ?? "user";
-        setWorkingDir(`/home/${uname}/${name.trim()}`);
-      });
-  }, [name, open]);
-
-  function reset() {
-    setName("");
-    setDescription("");
-    setPreviewUrl("http://localhost:4000");
-    setWorkingDir("");
-    setDevCommand("");
-    setError(null);
-  }
-
   function handleCancel() {
-    reset();
+    setDescription(project.description ?? "");
+    setPreviewUrl(project.previewUrl ?? "");
+    setWorkingDir(project.workingDir ?? "");
+    setDevCommand(project.devCommand ?? "");
+    setError(null);
     setOpen(false);
   }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const trimmedName = name.trim();
-    if (!trimmedName) return;
-
     setError(null);
     startTransition(async () => {
       try {
-        const res = await fetch("/api/projects", {
-          method: "POST",
+        const res = await fetch(`/api/projects/${project.id}`, {
+          method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            name: trimmedName,
-            description: description.trim() || undefined,
+            description: description.trim(),
             previewUrl: previewUrl.trim() || undefined,
             workingDir: workingDir.trim() || undefined,
             devCommand: devCommand.trim() || undefined,
           }),
         });
-
         if (!res.ok) {
           const data = await res.json();
-          setError(data.error ?? "Failed to create project");
+          setError(data.error ?? "Failed to update");
           return;
         }
-
-        const project = await res.json();
-        reset();
         setOpen(false);
         router.refresh();
-        router.push(`/projects/${project.id}`);
       } catch {
-        setError("Network error — could not create project");
+        setError("Network error");
       }
     });
   }
@@ -95,10 +55,9 @@ export function NewProjectForm() {
     return (
       <button
         onClick={() => setOpen(true)}
-        className="flex items-center gap-2 px-3 py-1.5 bg-green/10 border border-green/30 text-green text-xs font-medium rounded-lg hover:bg-green/20 transition-colors"
+        className="px-3 py-1.5 text-xs text-txt-muted border border-bg-border rounded-lg hover:bg-bg-elevated hover:text-txt transition-colors"
       >
-        <span className="text-base leading-none">+</span>
-        New Project
+        Edit Project
       </button>
     );
   }
@@ -110,56 +69,32 @@ export function NewProjectForm() {
         className="bg-bg-base border border-bg-border rounded-xl shadow-xl w-full max-w-md mx-4 p-6"
       >
         <h2 className="text-sm font-semibold text-txt uppercase tracking-wider mb-5">
-          New Project
+          Edit Project
         </h2>
 
         <div className="space-y-4">
           <div>
-            <label className="block text-xs text-txt-dim mb-1.5">
-              Name <span className="text-red">*</span>
-            </label>
-            <input
-              autoFocus
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="My Project"
-              required
-              className="w-full bg-bg-elevated border border-bg-border rounded-lg px-3 py-2 text-sm font-mono text-txt placeholder:text-txt-dim focus:outline-none focus:ring-1 focus:ring-green/50 focus:border-green/50 transition-colors"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs text-txt-dim mb-1.5">
-              Description
-            </label>
+            <label className="block text-xs text-txt-dim mb-1.5">Description</label>
             <input
               type="text"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="What is this project about?"
               className="w-full bg-bg-elevated border border-bg-border rounded-lg px-3 py-2 text-sm font-mono text-txt placeholder:text-txt-dim focus:outline-none focus:ring-1 focus:ring-green/50 focus:border-green/50 transition-colors"
             />
           </div>
 
           <div>
-            <label className="block text-xs text-txt-dim mb-1.5">
-              Working Directory <span className="text-red">*</span>
-            </label>
+            <label className="block text-xs text-txt-dim mb-1.5">Working Directory</label>
             <input
               type="text"
               value={workingDir}
               onChange={(e) => setWorkingDir(e.target.value)}
-              placeholder="/home/user/my-project"
-              required
               className="w-full bg-bg-elevated border border-bg-border rounded-lg px-3 py-2 text-sm font-mono text-txt placeholder:text-txt-dim focus:outline-none focus:ring-1 focus:ring-green/50 focus:border-green/50 transition-colors"
             />
           </div>
 
           <div>
-            <label className="block text-xs text-txt-dim mb-1.5">
-              Preview URL <span className="text-txt-dim">(optional)</span>
-            </label>
+            <label className="block text-xs text-txt-dim mb-1.5">Preview URL</label>
             <input
               type="url"
               value={previewUrl}
@@ -170,9 +105,7 @@ export function NewProjectForm() {
           </div>
 
           <div>
-            <label className="block text-xs text-txt-dim mb-1.5">
-              Dev Command <span className="text-txt-dim">(optional)</span>
-            </label>
+            <label className="block text-xs text-txt-dim mb-1.5">Dev Command</label>
             <input
               type="text"
               value={devCommand}
@@ -181,14 +114,12 @@ export function NewProjectForm() {
               className="w-full bg-bg-elevated border border-bg-border rounded-lg px-3 py-2 text-sm font-mono text-txt placeholder:text-txt-dim focus:outline-none focus:ring-1 focus:ring-green/50 focus:border-green/50 transition-colors"
             />
             <p className="mt-1 text-xs text-txt-dim">
-              Command to start the dev server (e.g., <code>just dev</code>, <code>npm run dev</code>)
+              e.g. <code>just dev</code>, <code>npm run dev</code>
             </p>
           </div>
         </div>
 
-        {error && (
-          <p className="mt-3 text-xs text-red font-mono">{error}</p>
-        )}
+        {error && <p className="mt-3 text-xs text-red font-mono">{error}</p>}
 
         <div className="mt-6 flex justify-end gap-2">
           <button
@@ -201,10 +132,10 @@ export function NewProjectForm() {
           </button>
           <button
             type="submit"
-            disabled={isPending || !name.trim()}
+            disabled={isPending}
             className="px-4 py-2 bg-green/10 border border-green/30 text-green text-xs font-medium rounded-lg hover:bg-green/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            {isPending ? "Creating…" : "Create Project"}
+            {isPending ? "Saving…" : "Save"}
           </button>
         </div>
       </form>

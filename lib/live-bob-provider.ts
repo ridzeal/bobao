@@ -165,7 +165,7 @@ function attachProcess(handle: ProcessHandle, proc: ChildProcessWithoutNullStrea
           // resume still works after a server restart)
           if (msg.stats?.task_id) {
             handle.taskId = msg.stats.task_id;
-            updateSessionTaskId(handle.session.id, handle.taskId);
+            updateSessionTaskId(handle.session.id, msg.stats.task_id);
           }
           const status = msg.status === "success" ? "completed" : msg.status;
           pushLine(handle, `[task ${status}${msg.stats?.duration_ms ? ` in ${(msg.stats.duration_ms / 1000).toFixed(1)}s` : ""}]`);

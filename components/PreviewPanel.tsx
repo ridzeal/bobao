@@ -4,19 +4,29 @@ import { useState } from "react";
 
 export function PreviewPanel({ url }: { url: string }) {
   const [failed, setFailed] = useState(false);
+  const [frameKey, setFrameKey] = useState(0);
 
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between px-3 py-2 border-b border-bg-border bg-bg-elevated shrink-0">
         <span className="text-xs font-mono text-txt-dim truncate">{url}</span>
-        <a
-          href={url}
-          target="_blank"
-          rel="noreferrer"
-          className="text-xs text-blue hover:underline ml-2 shrink-0"
-        >
-          open ↗
-        </a>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => setFrameKey((k) => k + 1)}
+            className="text-xs text-txt-dim hover:text-txt transition-colors"
+            title="Reload preview"
+          >
+            ↻
+          </button>
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs text-blue hover:underline"
+          >
+            open ↗
+          </a>
+        </div>
       </div>
       {failed ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-3 text-txt-muted">
@@ -34,6 +44,7 @@ export function PreviewPanel({ url }: { url: string }) {
         </div>
       ) : (
         <iframe
+          key={frameKey}
           src={url}
           className="flex-1 w-full border-0"
           title="App preview"
