@@ -8,7 +8,7 @@
 import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
-import { Project, ProjectStatus, Session, SessionStatus } from "./types";
+import { Project, ProjectStatus, Session, SessionStatus, LogLine } from "./types";
 
 // ─── Singleton DB anchored to globalThis (survives HMR) ──────────────────────
 
@@ -44,11 +44,24 @@ function getDb(): Database.Database {
         preview_url TEXT,
         FOREIGN KEY (project_id) REFERENCES projects(id)
       );
+      CREATE TABLE IF NOT EXISTS session_logs (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        ts         TEXT NOT NULL,
+        text       TEXT NOT NULL,
+        level      TEXT NOT NULL DEFAULT 'info',
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      );
     `);
     // Migrate: add topic column if missing
     const cols = db.prepare("PRAGMA table_info(sessions)").all() as any[];
     if (!cols.some((c) => c.name === "topic")) {
       db.exec("ALTER TABLE sessions ADD COLUMN topic TEXT NOT NULL DEFAULT ''");
+    }
+    // Migrate: add task_id column if missing (bob task id for `-r` resume runs)
+    const cols2 = db.prepare("PRAGMA table_info(sessions)").all() as any[];
+    if (!cols2.some((c) => c.name === "task_id")) {
+      db.exec("ALTER TABLE sessions ADD COLUMN task_id TEXT");
     }
     // Mark stale sessions as done on startup (process handles are in-memory, lost on restart)
     db.exec(`UPDATE sessions SET status = 'done' WHERE status IN ('running', 'blocked')`);
@@ -144,6 +157,9 @@ export function getProject(id: string): Project | undefined {
 
 export function deleteProject(id: string): boolean {
   const db = getDb();
+  db.prepare(
+    "DELETE FROM session_logs WHERE session_id IN (SELECT id FROM sessions WHERE project_id = ?)"
+  ).run(id);
   db.prepare("DELETE FROM sessions WHERE project_id = ?").run(id);
   const result = db.prepare("DELETE FROM projects WHERE id = ?").run(id);
   return result.changes > 0;
@@ -239,4 +255,34 @@ export function updateSessionStatus(id: string, status: SessionStatus): void {
 
   db.prepare("UPDATE sessions SET status = ? WHERE id = ?").run(status, id);
   refreshProjectStatus(session.projectId);
+}
+
+// ─── Bob task id (for `-r` resume runs) ──────────────────────────────────────
+
+export function updateSessionTaskId(id: string, taskId: string): void {
+  getDb().prepare("UPDATE sessions SET task_id = ? WHERE id = ?").run(taskId, id);
+}
+
+export function getSessionTaskId(id: string): string | undefined {
+  const row = getDb().prepare("SELECT task_id FROM sessions WHERE id = ?").get(id) as any;
+  return row?.task_id ?? undefined;
+}
+
+// ─── Session log persistence ──────────────────────────────────────────────────
+
+export function insertLog(sessionId: string, ts: Date, text: string, level: string): void {
+  getDb().prepare(
+    "INSERT INTO session_logs (session_id, ts, text, level) VALUES (?, ?, ?, ?)"
+  ).run(sessionId, ts.toISOString(), text, level);
+}
+
+export function getLogs(sessionId: string): LogLine[] {
+  const rows = getDb().prepare(
+    "SELECT ts, text, level FROM session_logs WHERE session_id = ? ORDER BY id ASC"
+  ).all(sessionId) as any[];
+  return rows.map((r) => ({
+    ts: new Date(r.ts),
+    text: r.text,
+    level: r.level as LogLine["level"],
+  }));
 }

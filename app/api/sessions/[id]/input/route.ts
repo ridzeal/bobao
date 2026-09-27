@@ -2,38 +2,22 @@
  * POST /api/sessions/[id]/input
  *
  * Body (JSON):
- *   { text: string }   // text to write to the child process stdin
+ *   { text: string }   // follow-up message
  *
- * Writes `text + "\n"` to the bob process stdin and flips status back to
- * `running` so the blocked banner disappears on the next page load / SSE poll.
+ * `bob run` is one-shot, so a follow-up spawns a new `bob run -r <taskId>`
+ * that resumes the same bob task with full conversation history.
  *
- * Returns 404 when no live process exists for the session.
- * Returns 409 when the process has already exited.
+ * Returns 400 for bad body, 409 when the agent is still running.
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getHandle } from "@/lib/live-bob-provider";
+import { sendFollowUp } from "@/lib/live-bob-provider";
 
 export async function POST(
   req: NextRequest,
   { params }: { params: { id: string } },
 ) {
   const sessionId = params.id;
-  const handle = getHandle(sessionId);
-
-  if (!handle) {
-    return NextResponse.json(
-      { error: "No live process for session " + sessionId },
-      { status: 404 },
-    );
-  }
-
-  if (handle.session.status === "done") {
-    return NextResponse.json(
-      { error: "Process has already exited" },
-      { status: 409 },
-    );
-  }
 
   let body: { text?: unknown };
   try {
@@ -50,8 +34,13 @@ export async function POST(
     );
   }
 
-  handle.proc.stdin.write(text + "\n");
-  handle.session.status = "running";
+  try {
+    sendFollowUp(sessionId, text.trim());
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status = msg.includes("still running") ? 409 : 404;
+    return NextResponse.json({ error: msg }, { status });
+  }
 
   return NextResponse.json({ ok: true });
 }

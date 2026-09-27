@@ -17,6 +17,7 @@
 
 import { NextRequest } from "next/server";
 import { getHandle } from "@/lib/live-bob-provider";
+import { getLogs } from "@/lib/live-store";
 import { LogLine } from "@/lib/session-provider";
 
 export const dynamic = "force-dynamic";
@@ -32,11 +33,27 @@ export async function GET(
   const sessionId = params.id;
   const handle = getHandle(sessionId);
 
+  // No live process — replay persisted logs from DB, then close.
   if (!handle) {
-    return new Response(
-      JSON.stringify({ error: "No live process for session " + sessionId }),
-      { status: 404, headers: { "Content-Type": "application/json" } },
-    );
+    const lines = getLogs(sessionId);
+    const stream = new ReadableStream({
+      start(controller) {
+        const enc = new TextEncoder();
+        for (const line of lines) {
+          controller.enqueue(enc.encode(sseEvent(line)));
+        }
+        controller.enqueue(enc.encode("event: done\ndata: {}\n\n"));
+        controller.close();
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      },
+    });
   }
 
   const stream = new ReadableStream({

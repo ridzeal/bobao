@@ -5,7 +5,6 @@ import { SessionBadge, HarnessBadge } from "@/components/StatusBadge";
 import { RelTime } from "@/components/RelTime";
 import { PageShell } from "@/components/Layout";
 import { LiveLogPanel } from "@/components/LiveLogPanel";
-import { InputForm } from "@/components/InputForm";
 import { PreviewPanel, PreviewPlaceholder } from "@/components/PreviewPanel";
 import { sendInputAction } from "./actions";
 
@@ -64,11 +63,10 @@ export default async function SessionPage({
           <div className="flex items-center gap-2 mb-2">
             <span className="text-yellow text-sm font-semibold">⚠ Needs your input</span>
           </div>
-          <p className="text-xs text-txt-muted mb-3 leading-relaxed">
+          <p className="text-xs text-txt-muted leading-relaxed">
             The agent is blocked and waiting for your decision. Review the log below, then
-            respond in the box.
+            respond in the input box.
           </p>
-          <InputForm sessionId={session.id} onSend={sendInputAction} />
         </div>
       )}
 
@@ -79,7 +77,7 @@ export default async function SessionPage({
       >
         {/* live log panel — streams via SSE */}
         <div className="bg-bg-surface border border-bg-border rounded-lg overflow-hidden flex flex-col" style={{ height: "520px" }}>
-          <LiveLogPanel sessionId={session.id} />
+          <LiveLogPanel sessionId={session.id} onSend={sendInputAction} />
         </div>
 
         {/* preview panel — only rendered when URL present */}

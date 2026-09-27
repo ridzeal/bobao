@@ -9,18 +9,22 @@
  * Behaviour:
  *  • Immediately starts streaming buffered + live lines.
  *  • Closes the EventSource when the server sends `event: done`.
+ *  • `reconnect()` restarts the stream from scratch (used after a follow-up
+ *    spawns a resume run — the server replays its full buffer on connect).
  *  • Cleans up on component unmount.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { LogLine } from "@/lib/session-provider";
 
 export function useLiveStream(sessionId: string): {
   lines: LogLine[];
   done: boolean;
+  reconnect: () => void;
 } {
   const [lines, setLines] = useState<LogLine[]>([]);
   const [done, setDone] = useState(false);
+  const [epoch, setEpoch] = useState(0);
 
   useEffect(() => {
     const url = `/api/sessions/${sessionId}/stream`;
@@ -42,13 +46,23 @@ export function useLiveStream(sessionId: string): {
     });
 
     es.onerror = () => {
+      // Stream died — treat as finished so the follow-up input stays usable.
+      // The server rejects sends with "Agent is still running" if it isn't.
       es.close();
+      setDone(true);
     };
 
     return () => {
       es.close();
     };
-  }, [sessionId]);
+  }, [sessionId, epoch]);
 
-  return { lines, done };
+  const reconnect = useCallback(() => {
+    // Server replays its full buffer on connect — start clean to avoid dupes
+    setLines([]);
+    setDone(false);
+    setEpoch((e) => e + 1);
+  }, []);
+
+  return { lines, done, reconnect };
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Wrapper that runs bob with proper path resolution in sandboxed Next.js
-const { execFileSync } = require('child_process');
+const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
@@ -24,10 +24,23 @@ const bobPath = process.env.BOB_PATH || '/home/linuxbrew/.linuxbrew/bin/bob';
 const cwd = process.env.BOB_CWD || process.cwd();
 const args = ['run', '--format', 'stream-json', '--trust', ...process.argv.slice(2)];
 
-const result = execFileSync(bobPath, args, {
+const proc = spawn(bobPath, args, {
   cwd,
   env: process.env,
-  stdio: ['pipe', 'pipe', 'pipe'],
-  maxBuffer: 10 * 1024 * 1024,
+  stdio: ['ignore', 'pipe', 'pipe'],
 });
-process.stdout.write(result);
+
+// Stream output in real-time instead of buffering.
+// Don't use .pipe() — when run inside Next.js, the pipe consumes data
+// before Next.js's stdout listener can see it. Forward manually instead.
+proc.stdout.on('data', (chunk) => process.stdout.write(chunk));
+proc.stderr.on('data', (chunk) => process.stderr.write(chunk));
+
+proc.on('close', (code) => {
+  process.exit(code ?? 1);
+});
+
+proc.on('error', (err) => {
+  console.error(err);
+  process.exit(1);
+});

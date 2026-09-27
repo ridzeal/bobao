@@ -8,13 +8,25 @@
  * ─────────────────
  * POST /api/sessions/[id]/spawn   → spawnBobProcess()   — creates the child
  * GET  /api/sessions/[id]/stream  → streamLogs()        — SSE fan-out
- * POST /api/sessions/[id]/input   → sendInput()         — writes to stdin
+ * POST /api/sessions/[id]/input   → sendFollowUp()      — spawns `bob run -r <taskId>`
+ *
+ * `bob run` is one-shot: the child exits when its task completes. Follow-ups
+ * therefore spawn a NEW `bob run -r <taskId> "<text>"` which resumes the same
+ * bob task (full conversation history) — the child is not kept alive.
  */
 
 import { spawn, execFile, ChildProcessWithoutNullStreams } from "child_process";
 import { createInterface } from "readline";
 import type { Session, SessionStatus, LogLine, Project } from "./types";
-import { updateSessionStatus } from "./live-store";
+import {
+  updateSessionStatus,
+  insertLog,
+  getSession,
+  getProject,
+  getLogs,
+  getSessionTaskId,
+  updateSessionTaskId,
+} from "./live-store";
 
 // SessionProvider interface is defined in session-provider but we only need
 // to satisfy it structurally — declare a minimal local version to avoid the
@@ -50,6 +62,16 @@ interface ProcessHandle {
   lines: LogLine[];
   /** SSE subscriber callbacks — called for every new line */
   subscribers: Set<(line: LogLine) => void>;
+  /** Working directory of the run — reused for resume runs */
+  cwd: string;
+  /** Bob task id from the `result` message — used for `-r` resume runs */
+  taskId?: string;
+  /**
+   * Resume runs replay all prior user messages before the new content.
+   * Set to the follow-up text so replayed history is dropped from the log
+   * (we already pushed a synthetic `[you]` line for it).
+   */
+  skipUntil?: string;
 }
 
 // Anchor handles to globalThis so Next.js hot-reload does not reset the map.
@@ -78,6 +100,7 @@ function pushLine(handle: ProcessHandle, text: string, isAssistantMessage = fals
   const level = isAssistantMessage ? classifyLine(text.replace(/\?/g, "")) : classifyLine(text);
   const line: LogLine = { ts: new Date(), text, level: isAssistantMessage && level === "prompt" ? "info" : level };
   handle.lines.push(line);
+  insertLog(handle.session.id, line.ts, line.text, line.level ?? "info");
 
   // Flip to blocked when a prompt-level line appears and session is running
   if (line.level === "prompt" && handle.session.status === "running") {
@@ -92,6 +115,95 @@ function pushLine(handle: ProcessHandle, text: string, isAssistantMessage = fals
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
+
+/**
+ * Wire a child process's stdio + lifecycle into an existing handle.
+ * Used both for the initial run and for `-r` resume runs (follow-ups),
+ * so every run appends to the same handle.lines / SSE subscribers.
+ */
+function attachProcess(handle: ProcessHandle, proc: ChildProcessWithoutNullStreams): void {
+  handle.proc = proc;
+  // Bob headless mode reads stdin until EOF before starting — close it (input
+  // follow-ups do NOT go via stdin; they spawn a new `bob run -r <taskId>`).
+  proc.stdin.end();
+
+  // Buffer partial lines from stdout
+  let stdoutBuf = "";
+  // Accumulate assistant message chunks into one line
+  let assistantBuf = "";
+  function flushAssistant(): void {
+    if (!assistantBuf) return;
+    pushLine(handle, `[bob] ${assistantBuf}`, true);
+    assistantBuf = "";
+  }
+  proc.stdout.on("data", (chunk: Buffer) => {
+    stdoutBuf += chunk.toString();
+    const lines = stdoutBuf.split("\n");
+    stdoutBuf = lines.pop() ?? "";
+    for (const line of lines) {
+      const text = line.trim();
+      if (!text) continue;
+      try {
+        const msg = JSON.parse(text);
+        if (msg.type === "message" && msg.content) {
+          const isAssistant = msg.role === "assistant";
+          if (isAssistant) {
+            assistantBuf += msg.content;
+          } else {
+            flushAssistant();
+            // Drop replayed history (and bob's echo of our follow-up — we
+            // already pushed a synthetic `[you]` line for it)
+            if (handle.skipUntil) {
+              if (msg.content === handle.skipUntil) handle.skipUntil = undefined;
+              continue;
+            }
+            pushLine(handle, msg.content);
+          }
+        } else if (msg.type === "result") {
+          flushAssistant();
+          // Capture task id so follow-ups can resume this task (persisted so
+          // resume still works after a server restart)
+          if (msg.stats?.task_id) {
+            handle.taskId = msg.stats.task_id;
+            updateSessionTaskId(handle.session.id, handle.taskId);
+          }
+          const status = msg.status === "success" ? "completed" : msg.status;
+          pushLine(handle, `[task ${status}${msg.stats?.duration_ms ? ` in ${(msg.stats.duration_ms / 1000).toFixed(1)}s` : ""}]`);
+        }
+      } catch {
+        flushAssistant();
+        pushLine(handle, text);
+      }
+    }
+  });
+
+  // Buffer partial lines from stderr
+  let stderrBuf = "";
+  proc.stderr.on("data", (chunk: Buffer) => {
+    stderrBuf += chunk.toString();
+    const lines = stderrBuf.split("\n");
+    stderrBuf = lines.pop() ?? "";
+    for (const line of lines) {
+      const text = line.trim();
+      if (text) pushLine(handle, text);
+    }
+  });
+
+  proc.on("close", (code) => {
+    flushAssistant();
+    console.log(`[bob] process pid=${proc.pid} closed code=${code}`);
+    handle.session.status = "done";
+    updateSessionStatus(handle.session.id, "done");
+    pushLine(handle, `[process exited with code ${code ?? "—"}]`);
+  });
+
+  proc.on("error", (err) => {
+    console.log(`[bob] process error pid=${proc.pid}: ${err.message}`);
+    handle.session.status = "done";
+    updateSessionStatus(handle.session.id, "done");
+    pushLine(handle, `[spawn error: ${err.message}]`);
+  });
+}
 
 /**
  * Spawn a `bob` child process for `sessionId`.
@@ -117,19 +229,6 @@ export function spawnBobProcess(
     handles.delete(sessionId);
   }
 
-  // Use wrapper script to resolve bob in sandboxed Next.js context
-  const wrapperPath = require("path").join(process.cwd(), "bob-run.js");
-  const proc = spawn(process.execPath, [wrapperPath, ...args], {
-    cwd,
-    env: { ...process.env, BOB_CWD: cwd },
-    stdio: ["pipe", "pipe", "pipe"],
-  }) as ChildProcessWithoutNullStreams;
-
-  console.log(`[bob] spawned pid=${proc.pid} cmd=node ${wrapperPath} ${args.join(" ")} cwd=${cwd}`);
-
-  // Bob waits for stdin to close before starting — close it immediately for headless mode
-  proc.stdin.end();
-
   const session: Session = {
     id: sessionId,
     ...sessionMeta,
@@ -138,64 +237,86 @@ export function spawnBobProcess(
   };
 
   const handle: ProcessHandle = {
-    proc,
+    proc: undefined as unknown as ChildProcessWithoutNullStreams,
     session,
     lines: [],
     subscribers: new Set(),
+    cwd,
   };
 
   handles.set(sessionId, handle);
 
-  // Buffer partial lines from stdout
-  let stdoutBuf = "";
-  proc.stdout.on("data", (chunk: Buffer) => {
-    stdoutBuf += chunk.toString();
-    const lines = stdoutBuf.split("\n");
-    stdoutBuf = lines.pop() ?? "";
-    for (const line of lines) {
-      const text = line.trim();
-      if (!text) continue;
-      try {
-        const msg = JSON.parse(text);
-        if (msg.type === "message" && msg.content) {
-          const isAssistant = msg.role === "assistant";
-          const prefix = isAssistant ? "[bob] " : "";
-          pushLine(handle, `${prefix}${msg.content}`, isAssistant);
-        } else if (msg.type === "result") {
-          const status = msg.status === "success" ? "completed" : msg.status;
-          pushLine(handle, `[task ${status}${msg.stats?.duration_ms ? ` in ${(msg.stats.duration_ms / 1000).toFixed(1)}s` : ""}]`);
-        }
-      } catch {
-        pushLine(handle, text);
-      }
-    }
-  });
+  const proc = spawnBobChild(args, cwd);
+  console.log(`[bob] spawned pid=${proc.pid} args=${args.join(" ")} cwd=${cwd}`);
+  attachProcess(handle, proc);
+}
 
-  // Buffer partial lines from stderr
-  let stderrBuf = "";
-  proc.stderr.on("data", (chunk: Buffer) => {
-    stderrBuf += chunk.toString();
-    const lines = stderrBuf.split("\n");
-    stderrBuf = lines.pop() ?? "";
-    for (const line of lines) {
-      const text = line.trim();
-      if (text) pushLine(handle, text);
-    }
-  });
+/** Spawn the bob wrapper script with extra argv (after `run --format stream-json --trust`). */
+function spawnBobChild(args: string[], cwd: string): ChildProcessWithoutNullStreams {
+  const wrapperPath = require("path").join(process.cwd(), "bob-run.js");
+  return spawn(process.execPath, [wrapperPath, ...args], {
+    cwd,
+    env: { ...process.env, BOB_CWD: cwd },
+    stdio: ["pipe", "pipe", "pipe"],
+  }) as ChildProcessWithoutNullStreams;
+}
 
-  proc.on("close", (code) => {
-    console.log(`[bob] process pid=${proc.pid} closed code=${code}`);
-    handle.session.status = "done";
-    updateSessionStatus(sessionId, "done");
-    pushLine(handle, `[process exited with code ${code ?? "—"}]`);
-  });
+/**
+ * Rebuild a process handle from SQLite after a server restart.
+ *
+ * The in-memory `handles` map is lost on restart, but the session row
+ * (task_id, project working dir) and all log lines are persisted — enough to
+ * resume the bob task and keep appending to the same log.
+ *
+ * Throws when the session cannot be resumed (no session / no task id / no
+ * working directory).
+ */
+function restoreHandle(sessionId: string): ProcessHandle {
+  const session = getSession(sessionId);
+  if (!session) throw new Error(`No live process for session ${sessionId}`);
 
-  proc.on("error", (err) => {
-    console.log(`[bob] process error pid=${proc.pid}: ${err.message}`);
-    handle.session.status = "done";
-    updateSessionStatus(sessionId, "done");
-    pushLine(handle, `[spawn error: ${err.message}]`);
-  });
+  const taskId = getSessionTaskId(sessionId);
+  if (!taskId) throw new Error("No task to resume yet");
+
+  const cwd = getProject(session.projectId)?.workingDir;
+  if (!cwd) throw new Error("Project has no working directory");
+
+  const handle: ProcessHandle = {
+    proc: undefined as unknown as ChildProcessWithoutNullStreams,
+    session,
+    lines: getLogs(sessionId),
+    subscribers: new Set(),
+    cwd,
+    taskId,
+  };
+  handles.set(sessionId, handle);
+  console.log(`[bob] restored handle for ${sessionId} task=${taskId} cwd=${cwd}`);
+  return handle;
+}
+
+/**
+ * Send a follow-up message to a session.
+ *
+ * `bob run` is one-shot (the process exits when the task completes), so a
+ * follow-up spawns a NEW `bob run -r <taskId> "<text>"` which resumes the
+ * same bob task with full conversation history. Works after a server restart:
+ * the handle is rebuilt from SQLite (logs + persisted task id).
+ */
+export function sendFollowUp(sessionId: string, text: string): void {
+  const handle = handles.get(sessionId) ?? restoreHandle(sessionId);
+  if (handle.session.status === "running") throw new Error("Agent is still running");
+  if (!handle.taskId) throw new Error("No task to resume yet");
+
+  handle.session.status = "running";
+  updateSessionStatus(sessionId, "running");
+
+  // Show the follow-up immediately; skip bob's replay of prior user messages
+  pushLine(handle, `[you] ${text}`, true);
+  handle.skipUntil = text;
+
+  const proc = spawnBobChild(["-r", handle.taskId!, text], handle.cwd);
+  console.log(`[bob] resume pid=${proc.pid} task=${handle.taskId} cwd=${handle.cwd}`);
+  attachProcess(handle, proc);
 }
 
 /** Returns the in-memory handle for a session, or undefined. */
@@ -296,13 +417,6 @@ export class LiveBobProvider implements SessionProvider {
 
   async sendInput(sessionId: string, text: string): Promise<void> {
     if (sessionId !== this.sessionId) return;
-
-    const h = handles.get(sessionId);
-    if (!h) throw new Error(`No live process for session ${sessionId}`);
-    if (h.session.status === "done") throw new Error("Process has already exited");
-
-    h.proc.stdin.write(text + "\n");
-    h.session.status = "running";
-    updateSessionStatus(sessionId, "running");
+    sendFollowUp(sessionId, text);
   }
 }
